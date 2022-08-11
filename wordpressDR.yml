@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation Sample Template WordPress_Single_Instance: WordPress
+  is web software you can use to create a beautiful website or blog. This template
+  installs WordPress with a local MySQL database for storage. It demonstrates using
+  the AWS CloudFormation bootstrap scripts to deploy WordPress. **WARNING** This template
+  creates an Amazon EC2 instance. You will be billed for the AWS resources used if
+  you create a stack from this template.'
+Resources:
+  WebServerSecurityGroupDr:
+    DependsOn: AttachGatewayDr
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 locked down to the load balancer
+        + SSH access
+      VpcId: !Ref 'VPCDr'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+  VPCDr:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '{{resolve:ssm:VPCCIDRDR}}'
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: DR-Wordpress VPC
+  InternetGatewayDr:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPCDr
+  AttachGatewayDr:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn:
+      - VPCDr
+      - InternetGatewayDr
+    Properties:
+      VpcId: !Ref 'VPCDr'
+      InternetGatewayId: !Ref 'InternetGatewayDr'
+  PublicSubnet1Dr:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGatewayDr
+    Properties:
+      VpcId: !Ref 'VPCDr'
+      CidrBlock: '{{resolve:ssm:PublicSubnet1Dr}}'
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1 - DR
+  PublicSubnet2Dr:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGatewayDr
+    Properties:
+      VpcId: !Ref 'VPCDr'
+      CidrBlock: '{{resolve:ssm:PublicSubnet2Dr}}'
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: Public Subnet 2 - DR
+  PublicRouteTableDr:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+      - VPCDr
+      - AttachGatewayDr
+    Properties:
+      VpcId: !Ref 'VPCDr'
+      Tags:
+        - Key: Name
+          Value: Public - DR
+  PublicRouteDr:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - PublicRouteTableDr
+      - AttachGatewayDr
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTableDr'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGatewayDr'
+  PublicSubnet1RouteTableAssociationDr:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - PublicRouteTableDr
+      - PublicSubnet1Dr
+      - AttachGatewayDr
+    Properties:
+      SubnetId: !Ref 'PublicSubnet1Dr'
+      RouteTableId: !Ref 'PublicRouteTableDr'
+  PublicSubnet2RouteTableAssociationPrd:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn:
+      - PublicRouteTableDr
+      - PublicSubnet2Dr
+    Properties:
+      SubnetId: !Ref 'PublicSubnet2Dr'
+      RouteTableId: !Ref 'PublicRouteTableDr'
+  UpdateParameter:
+    Type: AWS::SSM::Parameter
+    DependsOn: WebServerDr
+    Properties:
+      Name: drwebinstanceid
+      Value: !Ref WebServerDr
+      Type: String
+  UpdatefqdnParameter:
+    Type: AWS::SSM::Parameter
+    DependsOn: WebServerDr
+    Properties:
+      Name: drfqdn
+      Value: !GetAtt WebServerDr.PublicDnsName
+      Type: String
+  WebServerDr:
+    Type: AWS::EC2::Instance
+    DependsOn: WebServerSecurityGroupDr
+    Properties:
+      ImageId: '{{resolve:ssm:drwebamiid}}'
+      InstanceType: '{{resolve:ssm:InstanceType}}'
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          AssociatePublicIpAddress: 'true'
+          SubnetId: !Ref 'PublicSubnet2Dr'
+          GroupSet:
+            - !Ref 'WebServerSecurityGroupDr'
+      KeyName: wordpress-dr
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          service mysqld start
+          service httpd start
+
+Outputs:
+  WebsiteURL:
+    Value: !Sub 'http://${WebServerDr.PublicDnsName}/wordpress'
+    Description: WordPress Website DR Link
+  EC2IPAddress:
+    Value: !GetAtt WebServerDr.PublicIp
+  WebServer:
+    Value: !Ref WebServerDr
